@@ -70,12 +70,12 @@ int addWorker(char const *buf, int len, char *packet, int packetSize, const char
         for (char const *p = worker; *p; p++)
           packet[newLen++] = *p;
 
-        for (char const *p = packetEnds; *p; p++)
+        for (char const *p = packetEnds; *p && (p < buf + len); p++)
           packet[newLen++] = *p;
 
         packet[newLen] = 0;
 
-        if (LogFile) fprintf(LogFile, " = %4d: %s", newLen, packet);
+        if (LogFile) fprintf(LogFile, " = %4d buf = %s", newLen, packet);
         return newLen;
 
       } else {
