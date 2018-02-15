@@ -1,3 +1,4 @@
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <WinSock2.h>
 #include <Mswsock.h>
 #include <stdio.h>
@@ -36,9 +37,9 @@ int (__stdcall *WSAIoctlOriginal)(SOCKET s, DWORD dwIoControlCode, LPVOID lpvInB
 
 static void Error(const char *format, int result)
 {
-	char error[1024] = {0};
+	static char error[1024] = {0};
 
-	sprintf(error, format, result);
+	wsprintfA(error, format, result);
 
 	MessageBoxA(0, error, "NoDevFeeDll", 0);
 }
@@ -80,14 +81,33 @@ void OnSend(SOCKET s, char *buf, int len, int flags)
 		}
 	}
 
+  char *pWorker = strstr(buf, "\"worker\":\"");
+  if (pWorker) 
+  {
+    char * pWorkerEnd = strchr(pWorker + 10, '"');
+    char * pWorkerDot = strchr(pWorker + 10, '.');
+    if (pWorkerEnd && pWorkerDot && (pWorkerDot < pWorkerEnd))
+    {
+      *pWorkerEnd = 0;
+      if (LogFile) fprintf(LogFile, "Replace worker %s ", pWorker + 10);
+      for (char *p = pWorker + 10; p < pWorkerEnd; p++) 
+      {
+        if (*p == '.') *p = '_';
+      }
+      if (LogFile) fprintf(LogFile, " -> worker %s\n", pWorker + 10);
+      *pWorkerEnd = '"';
+    }
+  }
+
+
 	if (LogFile)
 	{
 		fprintf(LogFile, "s = 0x%04X flags = 0x%04X len = %4d buf = ", (unsigned int) s, flags, len);
 
-		for (int i = 0; i < len; ++i)
-			fprintf(LogFile, "%02X ", buf[i]);
+//		for (int i = 0; i < len; ++i)
+//			fprintf(LogFile, "%02X ", buf[i]);
 
-		fprintf(LogFile, "\n");
+//		fprintf(LogFile, "\n");
 
 		fwrite(buf, len, 1, LogFile);
 

@@ -4,9 +4,9 @@
 
 static void Error(const char *format, int result)
 {
-	char error[1024] = {0};
+	static char error[1024] = {0};
 
-	sprintf(error, format, result);
+	wsprintfA(error, format, result);
 
 	MessageBoxA(0, error, "NoDevFee", 0);
 }
