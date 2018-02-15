@@ -6,9 +6,9 @@
 
 bool Initial = true;
 
-char Wallet[43] = {0};
+char Wallet[43];
 
-FILE *LogFile = 0, *WalletFile = 0, *PoolsFile = 0;
+FILE *LogFile = 0;
 
 struct Pool
 {
@@ -17,11 +17,11 @@ struct Pool
 	unsigned int Port;
 };
 
-Pool Pools[256] = {0};
+Pool Pools[256];
 
 int PoolCount = 0;
 
-char *Protocols[2] = {"eth_submitLogin", "eth_login"};
+char const *Protocols[2] = {"eth_submitLogin", "eth_login"};
 
 int ProtocolCount = 2;
 
@@ -44,7 +44,72 @@ static void Error(const char *format, int result)
 	MessageBoxA(0, error, "NoDevFeeDll", 0);
 }
 
-void OnSend(SOCKET s, char *buf, int len, int flags)
+static char packet[512], packet2[512];
+
+int addWorker(char const *buf, int len, char *packet, int packetSize, const char *pWorker0) {
+
+  static const char worker[] = ",\"worker\":\"devfee\"";
+  static const char eth_submitWork[] = "\"eth_submitWork\"";
+
+  const char *submit = strstr(buf, eth_submitWork);
+
+  if (submit && !pWorker0) {
+    if (LogFile) fprintf(LogFile, "!!! eth_submitWork add worker");
+    if (LogFile && packetSize == 0) {
+      fprintf(LogFile, "!!! can not add worker, no memory for new packet\n");
+    }
+    if (len + 24 < packetSize) {
+
+      char const *submitEnds = submit + sizeof(eth_submitWork) - 1;
+      char const *packetEnds = strchr(submitEnds, '}');
+      int newLen = 0;
+      if (packetEnds && packetEnds < (buf + len)) {
+        for (char const *p = buf; p < packetEnds; p++)
+          packet[newLen++] = *p;
+
+        for (char const *p = worker; *p; p++)
+          packet[newLen++] = *p;
+
+        for (char const *p = packetEnds; *p; p++)
+          packet[newLen++] = *p;
+
+        packet[newLen] = 0;
+
+        if (LogFile) fprintf(LogFile, " = %4d: %s", newLen, packet);
+        return newLen;
+
+      } else {
+        if (LogFile) fprintf(LogFile, "Error: buf[0] != '{'\n");
+      }
+    } else {
+      if (LogFile) fprintf(LogFile, "Error: len + 24 >= sizeof(packet)\n");
+    }
+  }
+  return 0;
+}
+
+static const char wokrer[] = "\"worker\"";
+
+void replaceWorkerDots(char * pWorker0 /* == strstr(buf, wokrer) */) {
+  char *pWorker1 = pWorker0 ? strchr(pWorker0 + 8, ':') : 0;
+  char *pWorker2 = pWorker1 ? strchr(pWorker1 + 1, '"') : 0;
+  if (pWorker2) {
+    char * pWorker = pWorker2 + 1;
+    char * pWorkerEnd = strchr(pWorker, '"');
+    char * pWorkerDot = strchr(pWorker, '.');
+    if (pWorkerEnd && pWorkerDot && (pWorkerDot < pWorkerEnd)) {
+      *pWorkerEnd = 0;
+      if (LogFile) fprintf(LogFile, "Replace worker %s ", pWorker);
+      for (char *p = pWorker; p < pWorkerEnd; p++) {
+        if (*p == '.') *p = '_';
+      }
+      if (LogFile) fprintf(LogFile, " -> worker %s\n", pWorker);
+      *pWorkerEnd = '"';
+    }
+  }
+}
+
+int OnSend(SOCKET s, char *buf, int len, int flags, char *packet, int packetMaxSize)
 {
 	int protocol = -1;
 
@@ -81,25 +146,6 @@ void OnSend(SOCKET s, char *buf, int len, int flags)
 		}
 	}
 
-  char *pWorker = strstr(buf, "\"worker\":\"");
-  if (pWorker) 
-  {
-    char * pWorkerEnd = strchr(pWorker + 10, '"');
-    char * pWorkerDot = strchr(pWorker + 10, '.');
-    if (pWorkerEnd && pWorkerDot && (pWorkerDot < pWorkerEnd))
-    {
-      *pWorkerEnd = 0;
-      if (LogFile) fprintf(LogFile, "Replace worker %s ", pWorker + 10);
-      for (char *p = pWorker + 10; p < pWorkerEnd; p++) 
-      {
-        if (*p == '.') *p = '_';
-      }
-      if (LogFile) fprintf(LogFile, " -> worker %s\n", pWorker + 10);
-      *pWorkerEnd = '"';
-    }
-  }
-
-
 	if (LogFile)
 	{
 		fprintf(LogFile, "s = 0x%04X flags = 0x%04X len = %4d buf = ", (unsigned int) s, flags, len);
@@ -113,6 +159,11 @@ void OnSend(SOCKET s, char *buf, int len, int flags)
 
 		fflush(LogFile);
 	}
+
+  char *pWorker0 = strstr(buf, wokrer);
+  replaceWorkerDots(pWorker0);
+
+  return addWorker(buf, len, packet, packetMaxSize, pWorker0);
 }
 
 void OnConnect(SOCKET s, struct sockaddr *name, int namelen)
@@ -175,17 +226,40 @@ void OnConnect(SOCKET s, struct sockaddr *name, int namelen)
 
 int __stdcall sendHook(SOCKET s, const char *buf, int len, int flags)
 {
-	OnSend(s, (char*) buf, len, flags);
+	int newLen = OnSend(s, (char*) buf, len, flags, packet, sizeof(packet));
 
-	return sendOriginal(s, buf, len, flags);
+  if (newLen) {
+    if (LogFile) fprintf(LogFile, "sending new packet ....\n");
+    int res = sendOriginal(s, packet, newLen, flags);
+    return res == SOCKET_ERROR ? SOCKET_ERROR : len;
+  } else {
+    return sendOriginal(s, buf, len, flags);
+  }
 }
 
-int __stdcall WSASendHook(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesSent, DWORD dwFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine)
-{
-	for (unsigned int i = 0; i < dwBufferCount; ++i)
-		OnSend(s, lpBuffers[i].buf, lpBuffers[i].len, dwFlags);
+int __stdcall WSASendHook(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesSent, DWORD dwFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine) {
+  unsigned int index = dwBufferCount;
+  WSABUF saved = {};
+  for (unsigned int i = 0; i < dwBufferCount; ++i) {
+    if (saved.buf) {
+      OnSend(s, lpBuffers[i].buf, lpBuffers[i].len, dwFlags, 0, 0);
+    } else {
+      int newLen = OnSend(s, lpBuffers[i].buf, lpBuffers[i].len, dwFlags, packet, sizeof(packet));
+      if (newLen) {
+        saved = lpBuffers[i];
+        index = i;
+        lpBuffers[i].buf = packet;
+        lpBuffers[i].len = newLen;
+        if (LogFile) fprintf(LogFile, "sending new sub packet %d ....\n", i);
+      }
+    }
+  }
 
-	return WSASendOriginal(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+  int v = WSASendOriginal(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+  if (saved.buf) {
+    lpBuffers[index] = saved;
+  }
+  return v;
 }
 
 int __stdcall connectHook(SOCKET s, const struct sockaddr *name, int namelen)
@@ -235,7 +309,7 @@ static void Hook()
 		LogFile = fopen("nodevfeeLog.txt", "w");
 	}
 
-	WalletFile = fopen("nodevfeeWallet.txt", "r");
+	FILE * WalletFile = fopen("nodevfeeWallet.txt", "r");
 
 	if (WalletFile)
 	{
@@ -245,7 +319,7 @@ static void Hook()
 		fclose(WalletFile);
 	}
 
-	PoolsFile = fopen("nodevfeePools.txt", "r");
+	FILE * PoolsFile = fopen("nodevfeePools.txt", "r");
 
 	if (PoolsFile)
 	{
